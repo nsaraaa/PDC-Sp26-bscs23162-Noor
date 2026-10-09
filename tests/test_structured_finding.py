@@ -13,9 +13,11 @@ from bert_cwe_labeler.structured_finding import (
     ENUM_VALUES,
     TYPE_TO_CATEGORY,
     category_for_type,
+    finding_json_schema,
     make_finding_id,
     mechanical_features,
     validate_structured_finding,
+    validation_error_text,
 )
 
 # Types emitted outside the MESSAGE_RULES / CHECK_TEMPLATES tables (adapters.py).
@@ -163,6 +165,15 @@ def test_finding_id_is_stable_and_unique_per_index():
     assert make_finding_id("scan", 7) == "scan-f0007" and make_finding_id("scan", 7) != make_finding_id("scan", 8)
 
 
+def test_validation_error_text_is_compact_and_names_the_field():
+    bad = make_valid()
+    bad["features"]["endpoint_sensitivity"] = "login_page"
+    with pytest.raises(ValidationError) as exc:
+        validate_structured_finding(bad)
+    text = validation_error_text(exc.value)
+    assert "features.endpoint_sensitivity" in text and "login_page" in text and "errors.pydantic.dev" not in text
+
+
 # ---- S2: category mapping ---------------------------------------------------
 
 def test_every_rule_type_has_a_category():
@@ -179,3 +190,25 @@ def test_no_stale_or_misspelled_mapping_keys():
 def test_mapping_values_are_valid_categories():
     assert set(TYPE_TO_CATEGORY.values()) <= set(ENUM_VALUES["vulnerability_category"])
     assert category_for_type("brand_new_type") == "other" and category_for_type(None) == "other"
+
+
+# ---- S4: JSON schema --------------------------------------------------------
+
+def test_schema_round_trip():
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = finding_json_schema()
+    obj = make_valid()
+    jsonschema.validate(obj, schema)          # satisfies the schema ...
+    validate_structured_finding(obj)          # ... and the validator
+    bad = make_valid()
+    bad["features"]["endpoint_sensitivity"] = "login_page"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, schema)
+
+
+def test_schema_is_closed_and_lists_nullable_fields_as_required():
+    schema = finding_json_schema()
+    defs = schema["$defs"]
+    assert schema["additionalProperties"] is False and defs["Features"]["additionalProperties"] is False
+    assert "parameter" in defs["StructuredFields"]["required"]
+    assert "endpoint_sensitivity" in defs["Features"]["required"]

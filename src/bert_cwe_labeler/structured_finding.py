@@ -8,7 +8,7 @@ Needs pydantic v2.
 """
 from typing import Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 SCHEMA_VERSION = "structured_finding.v1"
 
@@ -247,3 +247,17 @@ def mechanical_features(finding: dict) -> dict:
 def validate_structured_finding(obj: dict) -> StructuredFinding:
     """Raises pydantic.ValidationError on schema/enum violation."""
     return StructuredFinding.model_validate(obj)
+
+
+def validation_error_text(exc: ValidationError) -> str:
+    """Compact one-line-per-problem text, suitable for the retry prompt (no pydantic doc URLs)."""
+    lines = []
+    for err in exc.errors():
+        where = ".".join(str(p) for p in err["loc"]) or "(root)"
+        lines.append(f"{where}: {err['msg']} (got {err.get('input')!r})")
+    return "\n".join(lines)
+
+
+def finding_json_schema() -> dict:
+    """What Mohid passes as the structured-output schema to the LLM API."""
+    return StructuredFinding.model_json_schema()
