@@ -13,6 +13,8 @@ from bert_cwe_labeler.structured_finding import (
     ENUM_VALUES,
     TYPE_TO_CATEGORY,
     category_for_type,
+    make_finding_id,
+    mechanical_features,
     validate_structured_finding,
 )
 
@@ -23,24 +25,38 @@ ADAPTER_ONLY_TYPES = {
     "probe_open_redirect", "probe_path_traversal",
 }
 
+# Test-only copy of a real finding shape (cwe list is illustrative).
+REAL_REFLECTED = {
+    "target": "dvwa-docker-lab", "auth_state": "authenticated", "type": "reflected",
+    "path": "/vulnerabilities/sqli/", "confidence": "normal", "fallback": False, "sources": ["crawler"],
+    "description": "The id parameter of the /vulnerabilities/sqli/ page reflects submitted input ...",
+    "evidence": [{"tool": "crawler", "auth_state": "authenticated", "check": "reflected",
+                  "endpoint": "/vulnerabilities/sqli/", "http_status": 200, "url_scheme": "http",
+                  "parameter": "id", "probe_value": "'"}],
+    "cwe": [{"cwe_id": "CWE-79", "name": "XSS", "score": 0.8214}], "below_threshold": False,
+}
+REAL_OUTDATED = {
+    "target": "dvwa-docker-lab", "auth_state": "unauthenticated", "type": "outdated_component", "path": None,
+    "confidence": "normal", "fallback": False, "sources": ["nikto"],
+    "description": "The server reports Apache 2.4.25, while the current release is at least 2.4.68. ...",
+    "evidence": [{"tool": "nikto", "auth_state": "unauthenticated",
+                  "line": "+ [600050] Apache/2.4.25 appears to be outdated (current is at least 2.4.68)."}],
+    "cwe": [{"cwe_id": "CWE-1104", "name": "Unmaintained Third Party Components", "score": 0.61}],
+    "below_threshold": False,
+}
+
 
 def make_valid():
+    f = mechanical_features(REAL_REFLECTED)
+    f.update(http_method=None, endpoint_sensitivity="unknown", user_input_involved=True, sensitive_data_exposed=False)
     return {
-        "finding_id": "dvwa-docker-lab-20261007-101157-f0003",
+        "finding_id": make_finding_id("dvwa-docker-lab-20261007-101157", 3),
         "scan_id": "dvwa-docker-lab-20261007-101157", "target": "dvwa-docker-lab",
         "schema_version": "structured_finding.v1", "prompt_version": "p1",
-        "features": {
-            "vulnerability_category": "cross_site_scripting", "cwe_primary": "CWE-79", "cwe_candidate_count": 1,
-            "weak_cwe_signal": False, "bert_top_score": 0.8214, "auth_state": "authenticated",
-            "http_method": None, "http_status": 200, "transport_scheme": "http",
-            "endpoint_sensitivity": "unknown", "user_input_involved": True, "parameter_reflected": True,
-            "sensitive_data_exposed": False, "component_outdated": False, "corroborating_source_count": 1,
-            "evidence_confidence": "normal", "is_fallback_finding": False,
-        },
+        "features": f,
         "structured_fields": {"affected_endpoint": "/vulnerabilities/sqli/", "parameter": "id",
                               "component_name": None, "component_version": None, "component_current_version": None},
-        "context": {"rule_based_description": "The id parameter of the /vulnerabilities/sqli/ page reflects ...",
-                    "llm_note": ""},
+        "context": {"rule_based_description": REAL_REFLECTED["description"], "llm_note": ""},
     }
 
 
@@ -95,11 +111,56 @@ def test_out_of_range_values_rejected():
             validate_structured_finding(bad)
 
 
+# ---- empty cwe --------------------------------------------------------------
+
+def test_empty_cwe_does_not_crash_and_gives_null_primary():
+    finding = copy.deepcopy(REAL_REFLECTED)
+    finding["cwe"] = []
+    feats = mechanical_features(finding)
+    assert feats["cwe_primary"] is None and feats["cwe_candidate_count"] == 0 and feats["bert_top_score"] is None
+    obj = make_valid()
+    obj["features"].update(feats)
+    validate_structured_finding(obj)
+
+
+def test_missing_cwe_keys_do_not_crash():
+    """Bundle produced with --no-model has no cwe / below_threshold keys."""
+    finding = {k: v for k, v in REAL_REFLECTED.items() if k not in ("cwe", "below_threshold")}
+    feats = mechanical_features(finding)
+    assert feats["cwe_primary"] is None and feats["weak_cwe_signal"] is False
+
+
 def test_contradictory_cwe_fields_rejected():
     bad = make_valid()
     bad["features"].update(cwe_primary=None)  # still says count=1 and a score
     with pytest.raises(ValidationError):
         validate_structured_finding(bad)
+
+
+# ---- mechanical_features on real shapes -------------------------------------
+
+def test_mechanical_features_reflected():
+    f = mechanical_features(REAL_REFLECTED)
+    assert f["vulnerability_category"] == "cross_site_scripting"
+    assert f["http_status"] == 200 and f["transport_scheme"] == "http"
+    assert f["parameter_reflected"] is True and f["component_outdated"] is False
+    assert f["corroborating_source_count"] == 1 and f["bert_top_score"] == 0.8214
+
+
+def test_mechanical_features_nikto_only_evidence():
+    f = mechanical_features(REAL_OUTDATED)
+    assert f["vulnerability_category"] == "outdated_component" and f["component_outdated"] is True
+    assert f["http_status"] is None and f["transport_scheme"] == "unknown"
+
+
+def test_weak_signal_copied_not_rederived():
+    finding = copy.deepcopy(REAL_REFLECTED)
+    finding["below_threshold"] = True
+    assert mechanical_features(finding)["weak_cwe_signal"] is True
+
+
+def test_finding_id_is_stable_and_unique_per_index():
+    assert make_finding_id("scan", 7) == "scan-f0007" and make_finding_id("scan", 7) != make_finding_id("scan", 8)
 
 
 # ---- S2: category mapping ---------------------------------------------------

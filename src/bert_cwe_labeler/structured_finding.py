@@ -191,6 +191,55 @@ class StructuredFinding(_Strict):
     context: Context
 
 
+# Features the LLM must judge. Everything else in Features comes from mechanical_features().
+LLM_JUDGMENT_FEATURES = ("endpoint_sensitivity", "user_input_involved", "sensitive_data_exposed", "http_method")
+
+
+# --------------------------------------------------------------------------- #
+# Helpers that fill the non-judgment fields in code
+# --------------------------------------------------------------------------- #
+
+def make_finding_id(scan_id: str, index: int) -> str:
+    """Findings have no id today; derive one from the scan id and position in ``records``."""
+    return f"{scan_id}-f{index:04d}"
+
+
+def _first_evidence(evidence: list, key: str, accept):
+    for entry in evidence:
+        value = entry.get(key)
+        if accept(value):
+            return value
+    return None
+
+
+def mechanical_features(finding: dict) -> dict:
+    """Features that are copies or simple derivations of an existing finding.
+
+    Safe on findings where BERT did not run (no ``cwe`` / ``below_threshold`` keys)
+    and on ``cwe == []``.
+    """
+    cwe = finding.get("cwe") or []
+    top = cwe[0] if cwe else None
+    evidence = finding.get("evidence") or []
+    ftype = finding.get("type")
+    scheme = _first_evidence(evidence, "url_scheme", lambda v: v in ("http", "https"))
+    return {
+        "vulnerability_category": category_for_type(ftype),
+        "cwe_primary": top["cwe_id"] if top else None,
+        "cwe_candidate_count": len(cwe),
+        "weak_cwe_signal": bool(finding.get("below_threshold", False)),
+        "bert_top_score": top["score"] if top else None,
+        "auth_state": finding["auth_state"],
+        "http_status": _first_evidence(evidence, "http_status", lambda v: isinstance(v, int) and not isinstance(v, bool)),
+        "transport_scheme": scheme or "unknown",
+        "component_outdated": ftype == "outdated_component",
+        "parameter_reflected": ftype == "reflected",
+        "corroborating_source_count": len(finding.get("sources") or []),
+        "evidence_confidence": finding.get("confidence", "normal"),
+        "is_fallback_finding": bool(finding.get("fallback", False)),
+    }
+
+
 # --------------------------------------------------------------------------- #
 # S3 / S4
 # --------------------------------------------------------------------------- #
