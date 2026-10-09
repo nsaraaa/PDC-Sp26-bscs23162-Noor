@@ -1,11 +1,31 @@
 """Data contract for LLM API call 01: what a *structured finding* is.
 
 One structured finding is produced per BERT-labeled finding in ``llm_context.json``.
-It has three blocks: ``features`` (typed fields for XGBoost), ``structured_fields``
-(extracted detail) and ``context`` (free text, never fed to ML).
+It has three blocks:
+
+* ``features``          fixed type/enum fields; these become XGBoost columns later.
+* ``structured_fields`` extracted detail (endpoint, parameter, component versions).
+* ``context``           free text for the report / LLM API call 02; never fed to ML.
+
+Who fills what
+--------------
+Many features are plain copies or derivations of fields the pipeline already
+has (``cwe[0]``, ``len(sources)``, ``below_threshold`` ...). ``mechanical_features()``
+computes those in code, so the LLM never has to copy them. The LLM only has to
+supply the judgment fields (see ``LLM_JUDGMENT_FEATURES``).
+
+Empty ``cwe`` list
+------------------
+``label()`` can leave ``cwe == []`` (e.g. ``min_keep=0``). In that case
+``cwe_primary`` is ``None``, ``cwe_candidate_count`` is 0 and ``bert_top_score``
+is ``None``. The model validator rejects any contradictory combination.
+
+Nullable fields are *required but nullable*: the key must be present, with
+``null`` when the evidence does not support a value. Omitting a key is an error.
 
 Needs pydantic v2.
 """
+
 from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
