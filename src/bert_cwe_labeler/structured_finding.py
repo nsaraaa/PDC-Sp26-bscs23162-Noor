@@ -8,6 +8,8 @@ Needs pydantic v2.
 """
 from typing import Literal, get_args
 
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
 SCHEMA_VERSION = "structured_finding.v1"
 
 # --------------------------------------------------------------------------- #
@@ -66,6 +68,10 @@ ENUM_VALUES = {
 }
 
 
+def _describe(definitions: dict) -> str:
+    return " ".join(f"{name}: {text}" for name, text in definitions.items())
+
+
 # --------------------------------------------------------------------------- #
 # S2: finding `type` -> vulnerability_category
 # Covers every type in normalize/rules.py (MESSAGE_RULES, CHECK_TEMPLATES) plus
@@ -121,3 +127,74 @@ TYPE_TO_CATEGORY = {
 def category_for_type(finding_type: str | None) -> str:
     """Deterministic category from the rule engine's ``type``; unknown types -> ``other``."""
     return TYPE_TO_CATEGORY.get(finding_type, "other")
+
+
+# --------------------------------------------------------------------------- #
+# S1: the model
+# --------------------------------------------------------------------------- #
+
+class _Strict(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class Features(_Strict):
+    vulnerability_category: Category = Field(description=_describe(CATEGORY_DEFINITIONS))
+    cwe_primary: str | None = Field(description="cwe[0].cwe_id verbatim; null when the cwe list is empty.")
+    cwe_candidate_count: int = Field(ge=0, description="len(cwe).")
+    weak_cwe_signal: bool = Field(description="Copy of the finding's below_threshold.")
+    bert_top_score: float | None = Field(ge=0, le=1, description="cwe[0].score; null when the cwe list is empty.")
+    auth_state: AuthState
+    http_method: HttpMethod | None = Field(description="HTTP method if shown in the evidence, else null.")
+    http_status: int | None = Field(ge=100, le=599, description="HTTP status from the evidence, else null.")
+    transport_scheme: TransportScheme = Field(description="http or https from the evidence; unknown if not shown.")
+    endpoint_sensitivity: EndpointSensitivity = Field(description=_describe(ENDPOINT_SENSITIVITY_DEFINITIONS))
+    user_input_involved: bool = Field(description="True only when a request parameter or form field is part of the evidence.")
+    parameter_reflected: bool = Field(description="True only for type 'reflected' or equivalent XSS-probe evidence.")
+    sensitive_data_exposed: bool = Field(description="True for git/htpasswd/auth-file/shell-history/phpinfo-style exposures.")
+    component_outdated: bool = Field(description="True only for type 'outdated_component'.")
+    corroborating_source_count: int = Field(ge=0, description="len(sources).")
+    evidence_confidence: EvidenceConfidence = Field(description="Copy of the finding's confidence.")
+    is_fallback_finding: bool = Field(description="Copy of the finding's fallback flag.")
+
+    @model_validator(mode="after")
+    def _empty_cwe_is_consistent(self):
+        if self.cwe_primary is None and (self.cwe_candidate_count != 0 or self.bert_top_score is not None):
+            raise ValueError("cwe_primary is null, so cwe_candidate_count must be 0 and bert_top_score must be null")
+        if self.cwe_primary is not None and self.cwe_candidate_count < 1:
+            raise ValueError("cwe_primary is set, so cwe_candidate_count must be at least 1")
+        return self
+
+
+class StructuredFields(_Strict):
+    affected_endpoint: str | None = Field(description="Path or endpoint affected, else null.")
+    parameter: str | None = Field(description="Request parameter name involved, else null.")
+    component_name: str | None = Field(description="Software component name (e.g. Apache), else null.")
+    component_version: str | None = Field(description="Version reported by the target, else null.")
+    component_current_version: str | None = Field(description="Current release reported by the scanner, else null.")
+
+
+class Context(_Strict):
+    """Free text. Never fed to the ML model."""
+
+    rule_based_description: str = Field(description="Copy of the original finding description.")
+    llm_note: str = Field(default="", description="Short note on anything unclear; empty if nothing.")
+
+
+class StructuredFinding(_Strict):
+    finding_id: str = Field(min_length=1)
+    scan_id: str = Field(min_length=1)
+    target: str = Field(min_length=1)
+    schema_version: str = SCHEMA_VERSION
+    prompt_version: str = Field(min_length=1)
+    features: Features
+    structured_fields: StructuredFields
+    context: Context
+
+
+# --------------------------------------------------------------------------- #
+# S3 / S4
+# --------------------------------------------------------------------------- #
+
+def validate_structured_finding(obj: dict) -> StructuredFinding:
+    """Raises pydantic.ValidationError on schema/enum violation."""
+    return StructuredFinding.model_validate(obj)
